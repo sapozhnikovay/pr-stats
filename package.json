@@ -11,10 +11,10 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
-    "@json2csv/plainjs": "^7.0.3",
-    "@octokit/rest": "^20.0.2",
-    "commander": "^11.1.0",
-    "parse-duration": "^1.1.0"
+    "@json2csv/plainjs": "7.0.6",
+    "@octokit/rest": "22.0.0",
+    "commander": "14.0.1",
+    "parse-duration": "2.1.4"
   },
   "keywords": [
     "pull-request",
@@ -34,6 +34,6 @@
   },
   "homepage": "https://github.com/sapozhnikovay/pr-duration#readme",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }
