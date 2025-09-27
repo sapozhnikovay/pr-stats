@@ -48,7 +48,7 @@ async function validateQueryableAuthor(username) {
   try {
     const query = `type:pr author:${username}`;
     // Attempt a dummy search query with just one result per page.
-    await octokit.search.issuesAndPullRequests({
+    await octokit.request('GET /search/issues', {
       q: query,
       per_page: 1,
       advanced_search: true,
@@ -107,7 +107,7 @@ export async function fetchPullRequests(usernames, org, repo, since, until, toke
   const perPage = 100;
 
   while (true) {
-    const { data } = await octokit.search.issuesAndPullRequests({
+    const { data } = await octokit.request('GET /search/issues', {
       q: query,
       per_page: perPage,
       advanced_search: true,
