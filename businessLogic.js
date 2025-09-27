@@ -51,6 +51,7 @@ async function validateQueryableAuthor(username) {
     await octokit.search.issuesAndPullRequests({
       q: query,
       per_page: 1,
+      advanced_search: true,
     });
     // If no error is thrown, the user is searchable.
     return true;
@@ -109,6 +110,7 @@ export async function fetchPullRequests(usernames, org, repo, since, until, toke
     const { data } = await octokit.search.issuesAndPullRequests({
       q: query,
       per_page: perPage,
+      advanced_search: true,
       page,
       headers: {
         Authorization: `token ${token}`,
