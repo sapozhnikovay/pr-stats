@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@json2csv/plainjs": "7.0.6",
+    "@octokit/plugin-throttling": "^11.0.1",
     "@octokit/rest": "22.0.0",
     "commander": "14.0.1",
     "parse-duration": "2.1.4"

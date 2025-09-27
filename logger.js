@@ -5,6 +5,9 @@ const logger = {
   error(message) {
     console.error(message);
   },
+  warn(message) {
+    console.warn(message);
+  },
 };
 
 export default logger;

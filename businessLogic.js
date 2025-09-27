@@ -1,8 +1,23 @@
 import { Octokit } from '@octokit/rest';
+import { throttling } from '@octokit/plugin-throttling';
 import parseDuration from 'parse-duration';
 import logger from './logger.js';
 
-const octokit = new Octokit();
+const MyOctokit = Octokit.plugin(throttling);
+const octokit = new MyOctokit({
+  throttle: {
+    onRateLimit: (retryAfter, options) => {
+      logger.warn(`Request quota exhausted for request ${options.method} ${options.url}`);
+      logger.warn(`Retrying after ${retryAfter} seconds`);
+      return true;
+    },
+    onSecondaryRateLimit: (retryAfter, options) => {
+      logger.warn(`Secondary request quota exhausted for request ${options.method} ${options.url}`);
+      logger.warn(`Retrying after ${retryAfter} seconds`);
+      return true;
+    },
+  },
+});
 
 /**
  * Get the authenticated user's login name.
@@ -41,6 +56,45 @@ export function parseDate(dateStr) {
 }
 
 /**
+ * Split a date range into chunks to avoid GitHub's 1000 result limit.
+ * Returns an array of { start, end } date objects.
+ */
+export function createTimeChunks(since, until, maxResults = 1000) {
+  const chunks = [];
+  const totalDays = Math.ceil((until - since) / (1000 * 60 * 60 * 24));
+
+  // Determine chunk size based on total time range
+  let chunkSizeDays;
+  if (totalDays <= 7) {
+    // For ranges up to a week, chunk by hours
+    chunkSizeDays = 1 / 24; // 1 hour
+  } else if (totalDays <= 30) {
+    // For ranges up to a month, chunk by days
+    chunkSizeDays = 1;
+  } else if (totalDays <= 60) {
+    // For ranges up to 2 months, chunk by weeks
+    chunkSizeDays = 7;
+  } else {
+    // For anything longer than 3 months, chunk by 2 months
+    chunkSizeDays = 60; // 2 months
+  }
+
+  let currentStart = new Date(since);
+  const chunkSizeMs = chunkSizeDays * 24 * 60 * 60 * 1000;
+
+  while (currentStart < until) {
+    const currentEnd = new Date(Math.min(currentStart.getTime() + chunkSizeMs, until.getTime()));
+    chunks.push({
+      start: new Date(currentStart),
+      end: new Date(currentEnd),
+    });
+    currentStart = new Date(currentEnd.getTime() + 1); // Add 1ms to avoid overlap
+  }
+
+  return chunks;
+}
+
+/**
  * Validate that the given username is searchable via the :author filter.
  * It runs a dummy search query and checks for a 422 error containing the expected message.
  */
@@ -66,11 +120,9 @@ async function validateQueryableAuthor(username) {
 }
 
 /**
- * Use GitHub's search API to get pull requests authored by the specified users
- * in the given organization (and repository, if provided) that were merged
- * since the given date.
+ * Fetch pull requests for a single time chunk.
  */
-export async function fetchPullRequests(usernames, org, repo, since, until, token) {
+async function fetchPullRequestsForChunk(usernames, org, repo, since, until, token, allPublic) {
   const sinceStr = since.toISOString().split('T')[0];
   const untilStr = until ? until.toISOString().split('T')[0] : '';
   let query = `type:pr is:merged merged:>=${sinceStr}`;
@@ -89,7 +141,72 @@ export async function fetchPullRequests(usernames, org, repo, since, until, toke
     query += ` org:${org}`;
   }
 
-  const allPublic = await Promise.all(usernames.map(validateQueryableAuthor));
+  // Use :author filter only if all usernames are public
+  if (allPublic.every((isPublic) => isPublic)) {
+    const userQueries = usernames.map((username) => `author:${username}`).join(' OR ');
+    // Add parentheses only if there are multiple users
+    if (usernames.length > 1) {
+      query += ` (${userQueries})`;
+    } else {
+      query += ` ${userQueries}`;
+    }
+  }
+
+  logger.info(`Chunk query: ${query}`);
+  logger.info(`Chunk date range: ${sinceStr} to ${untilStr}`);
+
+  const prs = [];
+  let page = 1;
+  const perPage = 100;
+
+  while (true) {
+    logger.info(`Fetching page ${page} for chunk ${sinceStr} to ${untilStr}`);
+
+    const { data } = await octokit.request('GET /search/issues', {
+      q: query,
+      per_page: perPage,
+      advanced_search: true,
+      page,
+      headers: {
+        Authorization: `token ${token}`,
+      },
+    });
+
+    logger.info(
+      `Page ${page} returned ${data.items ? data.items.length : 0} items (total: ${data.total_count || 'unknown'})`
+    );
+
+    if (!data.items || data.items.length === 0) break;
+    prs.push(...data.items);
+    if (data.items.length < perPage) break;
+    page++;
+  }
+
+  logger.info(`Chunk ${sinceStr} to ${untilStr} completed with ${prs.length} total PRs`);
+  return prs;
+}
+
+/**
+ * Check if chunking is needed by getting the total count from GitHub's search API.
+ */
+async function checkIfChunkingNeeded(usernames, org, repo, since, until, token, allPublic) {
+  const sinceStr = since.toISOString().split('T')[0];
+  const untilStr = until ? until.toISOString().split('T')[0] : '';
+  let query = `type:pr is:merged merged:>=${sinceStr}`;
+  if (untilStr) {
+    query = `type:pr is:merged merged:${sinceStr}..${untilStr}`;
+  }
+
+  // Add organization/repo filter
+  if (repo) {
+    if (repo.includes('/')) {
+      query += ` repo:${repo}`;
+    } else {
+      query += ` repo:${org}/${repo}`;
+    }
+  } else {
+    query += ` org:${org}`;
+  }
 
   // Use :author filter only if all usernames are public
   if (allPublic.every((isPublic) => isPublic)) {
@@ -102,33 +219,92 @@ export async function fetchPullRequests(usernames, org, repo, since, until, toke
     }
   }
 
-  const prs = [];
-  let page = 1;
-  const perPage = 100;
+  // Make a minimal request to get the total count
+  logger.info(`Checking total count with query: ${query}`);
+  const { data } = await octokit.request('GET /search/issues', {
+    q: query,
+    per_page: 1,
+    advanced_search: true,
+    headers: {
+      Authorization: `token ${token}`,
+    },
+  });
 
-  while (true) {
-    const { data } = await octokit.request('GET /search/issues', {
-      q: query,
-      per_page: perPage,
-      advanced_search: true,
-      page,
-      headers: {
-        Authorization: `token ${token}`,
-      },
-    });
+  logger.info(`Total count: ${data.total_count}`);
+  return data.total_count > 1000;
+}
 
-    if (!data.items || data.items.length === 0) break;
-    prs.push(...data.items);
-    if (data.items.length < perPage) break;
-    page++;
+/**
+ * Use GitHub's search API to get pull requests authored by the specified users
+ * in the given organization (and repository, if provided) that were merged
+ * since the given date. Automatically chunks large date ranges to avoid the 1000 result limit.
+ */
+export async function fetchPullRequests(usernames, org, repo, since, until, token) {
+  const allPublic = await Promise.all(usernames.map(validateQueryableAuthor));
+
+  // Check if chunking is needed based on total count
+  const needsChunking = await checkIfChunkingNeeded(usernames, org, repo, since, until, token, allPublic);
+
+  if (needsChunking) {
+    logger.info(`Total results exceed 1000, splitting into time chunks...`);
+
+    // Create time chunks and fetch each one
+    const chunks = createTimeChunks(since, until);
+    logger.info(`Splitting into ${chunks.length} time chunks`);
+
+    const allPrs = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      logger.info(
+        `=== Starting chunk ${i + 1}/${chunks.length}: ${chunk.start.toISOString().split('T')[0]} to ${
+          chunk.end.toISOString().split('T')[0]
+        } ===`
+      );
+
+      try {
+        const chunkPrs = await fetchPullRequestsForChunk(
+          usernames,
+          org,
+          repo,
+          chunk.start,
+          chunk.end,
+          token,
+          allPublic
+        );
+        allPrs.push(...chunkPrs);
+        logger.info(`Chunk ${i + 1} completed successfully with ${chunkPrs.length} PRs`);
+      } catch (chunkError) {
+        logger.error(`Error fetching chunk ${i + 1}: ${chunkError.message}`);
+        logger.error(
+          `Chunk details: ${chunk.start.toISOString().split('T')[0]} to ${chunk.end.toISOString().split('T')[0]}`
+        );
+        // Continue with other chunks
+      }
+
+      // Add a longer delay to avoid rate limiting
+      if (i < chunks.length - 1) {
+        logger.info(`Waiting 2 seconds before next chunk to avoid rate limiting...`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    }
+
+    // If not all usernames are public, filter PRs by author manually
+    if (!allPublic.every((isPublic) => isPublic)) {
+      return allPrs.filter((pr) => usernames.map((u) => u.toLowerCase()).includes(pr.user.login.toLowerCase()));
+    }
+
+    return allPrs;
+  } else {
+    // No chunking needed, fetch all results normally
+    const prs = await fetchPullRequestsForChunk(usernames, org, repo, since, until, token, allPublic);
+
+    // If not all usernames are public, filter PRs by author manually
+    if (!allPublic.every((isPublic) => isPublic)) {
+      return prs.filter((pr) => usernames.map((u) => u.toLowerCase()).includes(pr.user.login.toLowerCase()));
+    }
+
+    return prs;
   }
-
-  // If not all usernames are public, filter PRs by author manually
-  if (!allPublic.every((isPublic) => isPublic)) {
-    return prs.filter((pr) => usernames.map((u) => u.toLowerCase()).includes(pr.user.login.toLowerCase()));
-  }
-
-  return prs;
 }
 
 /**
