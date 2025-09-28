@@ -1,6 +1,6 @@
 {
   "name": "pr-duration",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Calculate and analyze Pull Request durations and metrics",
   "main": "index.js",
   "type": "module",
@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@json2csv/plainjs": "7.0.6",
-    "@octokit/plugin-throttling": "^11.0.1",
+    "@octokit/plugin-throttling": "11.0.1",
     "@octokit/rest": "22.0.0",
     "commander": "14.0.1",
     "parse-duration": "2.1.4"
