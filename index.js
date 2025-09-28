@@ -36,9 +36,11 @@ program
   .option('-u, --user <usernames>', 'Filter PRs by GitHub usernames (comma-separated list)')
   .option('-t, --token <token>', 'GitHub personal access token (can also be set via GITHUB_TOKEN env variable)')
   .option('--export <format>', 'Export data in the specified format (json or csv)')
+  .option('--log-level <level>', 'Log level: debug | info | warn | error | silent', 'info')
   .parse(process.argv);
 
 const options = program.opts();
+logger.setLevel(options.logLevel);
 const org = options.org;
 const repo = options.repo;
 const periodStr = options.period;
@@ -113,7 +115,7 @@ async function main() {
           options.export
         );
       } else {
-        console.log(`\nAverage merge duration: ${avgDuration.toFixed(2)} hours over ${count} pull request(s).`);
+        logger.info(`\nAverage merge duration: ${avgDuration.toFixed(2)} hours over ${count} pull request(s).`);
       }
     } else {
       if (logProgress) {

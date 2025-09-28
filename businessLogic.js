@@ -7,15 +7,21 @@ const MyOctokit = Octokit.plugin(throttling);
 const octokit = new MyOctokit({
   throttle: {
     onRateLimit: (retryAfter, options) => {
-      logger.warn(`Request quota exhausted for request ${options.method} ${options.url}`);
-      logger.warn(`Retrying after ${retryAfter} seconds`);
+      logger.debug(`Request quota exhausted for request ${options.method} ${options.url}`);
+      logger.debug(`Retrying after ${retryAfter} seconds`);
       return true;
     },
     onSecondaryRateLimit: (retryAfter, options) => {
-      logger.warn(`Secondary request quota exhausted for request ${options.method} ${options.url}`);
-      logger.warn(`Retrying after ${retryAfter} seconds`);
+      logger.debug(`Secondary request quota exhausted for request ${options.method} ${options.url}`);
+      logger.debug(`Retrying after ${retryAfter} seconds`);
       return true;
     },
+  },
+  log: {
+    warn: () => {},
+    error: () => {},
+    info: () => {},
+    debug: () => {},
   },
 });
 
@@ -112,6 +118,7 @@ async function validateQueryableAuthor(username) {
   } catch (error) {
     // Octokit throws an error with status 422 for unsearchable users.
     if (error.status === 422 && error.message.includes('The listed users cannot be searched')) {
+      logger.debug(`User "${username}" is not searchable. Need to filter PRs by author manually.`);
       return false;
     }
     // For any other error, rethrow or handle accordingly.
@@ -152,15 +159,15 @@ async function fetchPullRequestsForChunk(usernames, org, repo, since, until, tok
     }
   }
 
-  logger.info(`Chunk query: ${query}`);
-  logger.info(`Chunk date range: ${sinceStr} to ${untilStr}`);
+  logger.debug(`Chunk query: ${query}`);
+  logger.debug(`Chunk date range: ${sinceStr} to ${untilStr}`);
 
   const prs = [];
   let page = 1;
   const perPage = 100;
 
   while (true) {
-    logger.info(`Fetching page ${page} for chunk ${sinceStr} to ${untilStr}`);
+    logger.debug(`Fetching page ${page} for chunk ${sinceStr} to ${untilStr}`);
 
     const { data } = await octokit.request('GET /search/issues', {
       q: query,
@@ -172,7 +179,7 @@ async function fetchPullRequestsForChunk(usernames, org, repo, since, until, tok
       },
     });
 
-    logger.info(
+    logger.debug(
       `Page ${page} returned ${data.items ? data.items.length : 0} items (total: ${data.total_count || 'unknown'})`
     );
 
@@ -182,7 +189,7 @@ async function fetchPullRequestsForChunk(usernames, org, repo, since, until, tok
     page++;
   }
 
-  logger.info(`Chunk ${sinceStr} to ${untilStr} completed with ${prs.length} total PRs`);
+  logger.debug(`Chunk ${sinceStr} to ${untilStr} completed with ${prs.length} total PRs`);
   return prs;
 }
 
@@ -220,7 +227,7 @@ async function checkIfChunkingNeeded(usernames, org, repo, since, until, token, 
   }
 
   // Make a minimal request to get the total count
-  logger.info(`Checking total count with query: ${query}`);
+  logger.debug(`Checking total count with query: ${query}`);
   const { data } = await octokit.request('GET /search/issues', {
     q: query,
     per_page: 1,
@@ -230,7 +237,7 @@ async function checkIfChunkingNeeded(usernames, org, repo, since, until, token, 
     },
   });
 
-  logger.info(`Total count: ${data.total_count}`);
+  logger.debug(`Total count: ${data.total_count}`);
   return data.total_count > 1000;
 }
 
@@ -246,16 +253,16 @@ export async function fetchPullRequests(usernames, org, repo, since, until, toke
   const needsChunking = await checkIfChunkingNeeded(usernames, org, repo, since, until, token, allPublic);
 
   if (needsChunking) {
-    logger.info(`Total results exceed 1000, splitting into time chunks...`);
+    logger.debug(`Total results exceed 1000, splitting into time chunks...`);
 
     // Create time chunks and fetch each one
     const chunks = createTimeChunks(since, until);
-    logger.info(`Splitting into ${chunks.length} time chunks`);
+    logger.debug(`Splitting into ${chunks.length} time chunks`);
 
     const allPrs = [];
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
-      logger.info(
+      logger.debug(
         `=== Starting chunk ${i + 1}/${chunks.length}: ${chunk.start.toISOString().split('T')[0]} to ${
           chunk.end.toISOString().split('T')[0]
         } ===`
@@ -272,10 +279,10 @@ export async function fetchPullRequests(usernames, org, repo, since, until, toke
           allPublic
         );
         allPrs.push(...chunkPrs);
-        logger.info(`Chunk ${i + 1} completed successfully with ${chunkPrs.length} PRs`);
+        logger.debug(`Chunk ${i + 1} completed successfully with ${chunkPrs.length} PRs`);
       } catch (chunkError) {
-        logger.error(`Error fetching chunk ${i + 1}: ${chunkError.message}`);
-        logger.error(
+        logger.debug(`Error fetching chunk ${i + 1}: ${chunkError.message}`);
+        logger.debug(
           `Chunk details: ${chunk.start.toISOString().split('T')[0]} to ${chunk.end.toISOString().split('T')[0]}`
         );
         // Continue with other chunks
@@ -283,7 +290,7 @@ export async function fetchPullRequests(usernames, org, repo, since, until, toke
 
       // Add a longer delay to avoid rate limiting
       if (i < chunks.length - 1) {
-        logger.info(`Waiting 2 seconds before next chunk to avoid rate limiting...`);
+        logger.debug(`Waiting 2 seconds before next chunk to avoid rate limiting...`);
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
@@ -339,17 +346,17 @@ export async function fetchReadyTime(owner, repo, prNumber, fallbackCreatedAt, t
 export async function loadPullRequests(users, org, repo, sinceDate, untilDate, token, logProgress) {
   if (logProgress) {
     if (repo) {
-      logger.info(
+      logger.debug(
         `Fetching PR stats for users ${users.join(', ')} in repo ${repo.includes('/') ? repo : `${org}/${repo}`}...`
       );
     } else {
-      logger.info(`Fetching PR stats for users ${users.join(', ')} in organization ${org}...`);
+      logger.debug(`Fetching PR stats for users ${users.join(', ')} in organization ${org}...`);
     }
   }
 
   const prItems = await fetchPullRequests(users, org, repo, sinceDate, untilDate, token);
   if (logProgress) {
-    logger.info(`Found ${prItems.length} pull request(s).`);
+    logger.debug(`Found ${prItems.length} pull request(s).`);
   }
 
   return prItems;
@@ -394,7 +401,7 @@ export async function calculateAverageDuration(prItems, token, logProgress) {
     });
 
     if (logProgress) {
-      logger.info(
+      logger.debug(
         `PR #${prNumber} (${ownerName}/${repoName}): Ready at ${readyTime.toISOString()}, Merged at ${mergeTime.toISOString()} → Duration: ${durationHours.toFixed(
           2
         )} hours`
